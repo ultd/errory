@@ -93,7 +93,7 @@ export const error = buildError(
 		DBError: {
 			contextShape: {
 				dbType: 'string',
-                table: 'string'
+				table: 'string'
 			},
 		},
 		AuthError: {
