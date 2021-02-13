@@ -1,0 +1,22 @@
+{
+  "name": "errory",
+  "version": "0.0.1",
+  "description": "dead simple error for node.js and browser",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prepublish": "tsc",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "ultd",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^14.14.26",
+    "@types/sprintf-js": "^1.1.2",
+    "typescript": "^4.1.5"
+  },
+  "dependencies": {
+    "error-stack-parser": "^2.0.6",
+    "sprintf-js": "^1.1.2"
+  }
+}
