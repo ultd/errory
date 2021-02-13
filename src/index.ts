@@ -132,7 +132,7 @@ const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolea
 }
 
 const genTypeStr = (print: boolean, preceedingChars: string, type: string): string => {
-	if (!print) {
+	if (!print || !type) {
 		return ''
 	}
 	return `  ${preceedingChars}${type}`
@@ -207,7 +207,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 
 		const internal: Internal<ErrorTypes, any> = {
 			ctx: {},
-			type: errorTypeInMessageStrFound ? errorTypeInMessageStr! : 'UnknownError',
+			type: errorTypeInMessageStrFound ? errorTypeInMessageStr! : '',
 			typeCalled: false,
 			typeInMessageString: false,
 			stackFrames: stackFrames,
