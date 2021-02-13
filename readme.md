@@ -1,10 +1,10 @@
 # errory
-___
-## Why did we feel the need to re-invent Javascript errors?
 
-### Well we didn't, but before we get into that, let's understand the problem at hand.
+### Why did we feel the need to re-invent Javascript errors?
 
-This package helps users navigate the unknown JS world of errors. In JS, Errors are strings. In the real world, strings are not errors. They do not provide enough information to be able to have an effective course of action. this is why errory was born.
+#### Well we didn't, but before we get into that, let's understand the problem at hand.
+
+This package helps users navigate the unknown JS world of errors. In JS, Errors are strings. In the real world, strings are not errors. They do not provide enough information to be able to have an effective course of action. This is why errory was born.
 
 Consider the following error:
 
@@ -137,3 +137,5 @@ console.log(err)
 
 console.log(err.isUnknownError())
 // true
+```
+
