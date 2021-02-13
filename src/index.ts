@@ -1,6 +1,5 @@
 import { parse, StackFrame } from 'error-stack-parser'
 import { vsprintf } from 'sprintf-js'
-import { createContext } from 'vm'
 
 interface Opts {
 	/**
