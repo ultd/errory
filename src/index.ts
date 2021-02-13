@@ -73,8 +73,8 @@ interface Opts {
 
 export type Options = Partial<Opts>
 
-interface Internal<T> {
-	ctx?: Ctx
+interface Internal<ETD extends ErrorTypesDefinition, T extends keyof ETD> {
+	ctx: Context<ETD[T]['context']>
 	type: keyof T
 	typeCalled: boolean
 	typeInMessageString: boolean
@@ -84,10 +84,6 @@ interface Internal<T> {
 	wrappedError: Error | null
 }
 
-interface Ctx {
-	[key: string]: number | string | boolean
-}
-
 type ContextValueType = 'string' | 'number' | 'boolean'
 
 interface ContextShape {
@@ -95,7 +91,7 @@ interface ContextShape {
 }
 
 type Context<T extends ContextShape> = {
-	readonly [key in keyof T as key extends string ? key : never]?: T[key] extends 'string'
+	readonly [key in keyof T]?: T[key] extends 'string'
 		? string
 		: T[key] extends 'number'
 		? number
@@ -105,12 +101,21 @@ type Context<T extends ContextShape> = {
 }
 
 interface ErrorTypeConfig {
-	contextShape?: ContextShape
+	context: ContextShape
 }
 
 interface ErrorTypesDefinition {
 	[key: string]: ErrorTypeConfig
 }
+
+type error<ETD extends ErrorTypesDefinition, T extends keyof ETD> = Error & {
+	readonly ctx: Context<ETD[T]['context']>
+} & {
+		[key in keyof ETD as `is${string & key}`]: (err?: error<ETD, any>) => err is error<ETD, key>
+	} & {
+		type<E extends keyof ETD>(type: E, ctx?: Context<ETD[E]['context']>): error<ETD, E>
+		toJSON: (prettyPrint?: boolean) => string
+	}
 
 const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolean): string => {
 	if (!print) {
@@ -148,18 +153,28 @@ const genTypeTag = (preceedingChars: string, type: string): string => {
 	return `${preceedingChars}${type}`
 }
 
-export const buildError = <ETD extends ErrorTypesDefinition = ErrorTypesDefinition>(
-	errorTypes: ETD,
-	opts: Options
-) => {
-	type ErrorTypes = ETD & { UnknownError: ErrorTypeConfig }
-	errorTypes = Object.assign({ UnknownError: {} }, errorTypes)
-
-	type ContextShapeTypes = {
-		[key in keyof ErrorTypes]: ErrorTypes[key]['contextShape'] extends ContextShape
-			? Context<ErrorTypes[key]['contextShape']>
-			: never
+const setupErrorTypes = <ETD extends ErrorTypesDefinition>(errorTypes: ETD): ETD => {
+	const defaultErrorTypeConfig: ErrorTypeConfig = {
+		context: {},
 	}
+
+	let _errorTypes: any = {}
+	for (const type in errorTypes) {
+		_errorTypes[type] = Object.assign({}, defaultErrorTypeConfig, errorTypes[type])
+	}
+	return _errorTypes
+}
+
+const setErrorContext = (err: error<any, any>, ctx: any) => {
+	;(err as any).ctx = ctx
+}
+
+export const buildError = <ETD extends ErrorTypesDefinition>(
+	errorTypes: ETD,
+	opts: Options = {}
+) => {
+	type ErrorTypes = ETD
+	let configuredErrorTypes = setupErrorTypes(errorTypes)
 
 	const instanceOptions: Opts = {
 		locationInMessage: false,
@@ -173,14 +188,10 @@ export const buildError = <ETD extends ErrorTypesDefinition = ErrorTypesDefiniti
 		Object.assign(instanceOptions, options)
 	}
 
-	type error<T extends keyof ErrorTypes> = Error & { ctx?: ContextShapeTypes[T] } & {
-			[key in keyof ErrorTypes as `is${string & key}`]: (err?: error<any>) => err is error<key>
-		} & { type<T extends keyof ErrorTypes>(type: T, ctx?: ContextShapeTypes[T]): error<T> }
-
-	function errorFactory(message: string, args: any[]): error<any> {
+	function errorFactory(message: string, args: any[]): error<ErrorTypes, any> {
 		let errorTypeInMessageStrFound = false
 		let errorTypeInMessageStr: keyof ErrorTypes
-		for (const errType in errorTypes) {
+		for (const errType in configuredErrorTypes) {
 			if (message.includes(genTypeTag(instanceOptions.typePreceedingChars, errType))) {
 				errorTypeInMessageStrFound = true
 				errorTypeInMessageStr = errType
@@ -188,13 +199,14 @@ export const buildError = <ETD extends ErrorTypesDefinition = ErrorTypesDefiniti
 		}
 
 		// create the error to use
-		let err = Error() as error<any>
+		let err = Error() as error<ErrorTypes, any>
 		const stackFrames = parse(err)
 
 		// remove first 2 StackFrames as they are error and errorFactory function calls
 		stackFrames.splice(0, 2)
 
-		const internal: Internal<ErrorTypes> = {
+		const internal: Internal<ErrorTypes, any> = {
+			ctx: {},
 			type: errorTypeInMessageStrFound ? errorTypeInMessageStr! : 'UnknownError',
 			typeCalled: false,
 			typeInMessageString: false,
@@ -224,7 +236,7 @@ export const buildError = <ETD extends ErrorTypesDefinition = ErrorTypesDefiniti
 		err.message = genMessage()
 
 		// define is[ErrorType] function on error
-		for (const errType in errorTypes) {
+		for (const errType in configuredErrorTypes) {
 			Object.defineProperty(err, `is${errType}`, {
 				value: () => {
 					return internal.type === errType
@@ -256,31 +268,41 @@ export const buildError = <ETD extends ErrorTypesDefinition = ErrorTypesDefiniti
 
 		alterStack()
 
-		err.type = <T extends keyof ErrorTypes>(
-			type: T,
-			ctx?: ErrorTypes[T]['contextShape'] extends ContextShape
-				? Context<ErrorTypes[T]['contextShape']>
-				: never
-		) => {
+		err.type = <T extends keyof ErrorTypes>(type: T, ctx?: Context<ErrorTypes[T]['context']>) => {
 			if (internal.typeCalled) {
 				throw new Error('cannot call "type" method once already set previously!')
 			}
 			internal.type = type
-			internal.ctx = ctx as Ctx
-			err.ctx = Object.freeze({ ...(internal.ctx as any) })
+			internal.ctx = ctx as Context<ErrorTypes[T]['context']>
+			setErrorContext(err, Object.freeze({ ...internal.ctx }))
 			err.message = genMessage()
 			alterStack()
 			internal.typeCalled = true
-			return err as error<T>
+			return err as error<ErrorTypes, T>
 		}
 
+		err.toJSON = (prettyPrint: boolean = false): string => {
+			return JSON.stringify(
+				{
+					name: err.name,
+					type: internal.type,
+					message: err.message,
+					context: err.ctx,
+					stack: internal.stackFrames,
+				},
+				null,
+				prettyPrint ? 2 : 0
+			)
+		}
+
+		setErrorContext(err, Object.freeze({ ...internal.ctx }))
 		return err
 	}
 
 	setInstanceOptions(opts)
 
-	function error(message: string, ...args: [...any, Error]): error<any>
-	function error(error: Error): error<any>
+	function error(message: string, ...args: [...any, Error]): error<ErrorTypes, any>
+	function error(error: Error): error<ErrorTypes, any>
 	function error(messageOrError: string | Error, ...args: any[]) {
 		if (messageOrError instanceof Error) {
 			return errorFactory(messageOrError.message, [])
