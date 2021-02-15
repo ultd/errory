@@ -1,5 +1,6 @@
 import ErrorStackParser, { StackFrame } from 'error-stack-parser'
 import { vsprintf } from 'sprintf-js'
+import c from 'ansi-colors'
 
 interface Opts {
 	/**
@@ -64,8 +65,9 @@ interface Opts {
 	 * const err = error('could not authenticate', new Error('Bad credentials')).type('AuthError')
 	 *
 	 * console.log(err.toString())
-	 * // Error: this is an error message --AuthError
-	 * // Error: Bad credentials
+	 * // Error: this is an error message --AuthError (src/routes/login.ts:33:3)
+	 * //     => Error: Bad credentials (src/controllers/login.ts:35:5)
+	 * //         => Error: Password mismatch (src/models/users.ts:44:10)
 	 * ```
 	 */
 	wrappedErrorInMessage: boolean
@@ -97,70 +99,42 @@ interface ErrorTypeConfig {
 	context: ContextShape
 }
 
-interface ErroryInternal<ETD extends ErrorTypesDefinition, T extends keyof ETD | undefined>
-	extends Error {
+interface ErroryInternal<ETD extends ErrorTypesDefinition, T extends keyof ETD | undefined> {
+	name: string
+	message: string
+	stack: string
 	context: { [key: string]: string | number | boolean }
 	type: T
-	typeIsSet: boolean
 	typeIsInMessageString: boolean
 	stackFrames: StackFrame[]
-	message: string
 	args: any[]
 	wrappedError: Error | null
-}
-
-const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolean): string => {
-	if (!print) {
-		return ''
-	}
-	if (relative) {
-		const relativeFileName = stack.fileName?.substring(
-			process.cwd().length + 1,
-			stack.fileName.length
-		)
-		return `  (${relativeFileName}:${stack.lineNumber}:${stack.columnNumber})`
-	}
-	return `  (${stack.fileName}:${stack.lineNumber}:${stack.columnNumber})`
-}
-
-const genTypeStr = (print: boolean, preceedingChars: string, type: string | undefined): string => {
-	if (!print || !type) {
-		return ''
-	}
-	return `  ${preceedingChars}${type}`
-}
-
-const genWrappedErrorStr = (print: boolean, wrappedError: Error | null): string => {
-	if (!print || !wrappedError) {
-		return ''
-	}
-	return `:\n${wrappedError.toString()}`
-}
-
-const genMessageStr = (fMsg: string, args: any[]): string => {
-	return vsprintf(fMsg, args)
-}
-
-const genTypeTag = (preceedingChars: string, type: string): string => {
-	return `${preceedingChars}${type}`
-}
-
-const setupErrorTypes = <ETD extends ErrorTypesDefinition>(errorTypes: ETD): ETD => {
-	const defaultErrorTypeConfig: ErrorTypeConfig = {
-		context: {},
-	}
-
-	let _errorTypes: any = {}
-	for (const type in errorTypes) {
-		_errorTypes[type] = Object.assign({}, defaultErrorTypeConfig, errorTypes[type])
-	}
-	return _errorTypes
+	toFormattedString: (
+		typeInMessage: boolean,
+		typePreceedingChars: string,
+		locationInMessage: boolean,
+		locationAsRelativePath: boolean,
+		wrappedErrorInMessage: boolean,
+		indent: number
+	) => string
 }
 
 export const buildError = <ETD extends ErrorTypesDefinition>(
 	errorTypes: ETD,
 	opts: Options = {}
 ) => {
+	const setupErrorTypes = (errorTypes: ETD): ETD => {
+		const defaultErrorTypeConfig: ErrorTypeConfig = {
+			context: {},
+		}
+
+		let _errorTypes: any = {}
+		for (const type in errorTypes) {
+			_errorTypes[type] = Object.assign({}, defaultErrorTypeConfig, errorTypes[type])
+		}
+		return _errorTypes
+	}
+
 	type Errory<T extends keyof ETD | undefined> = Error & {
 		readonly context: T extends keyof ETD
 			? {
@@ -216,13 +190,13 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		 * 				 Optionally provide an Error object as the final argument to
 		 * 				 wrap in Errory error returned.
 		 */
-		(message: string, ...args: [...any, Error]): Errory<keyof ETD>
+		(message: string, ...args: [...any, Error]): Errory<any>
 		/**
 		 * Errory constructor - constructs a new Errory error from an existing plain Error
 		 *
 		 * @param error - A plain Error object to convert into an Errory error.
 		 */
-		(error: Error): Errory<keyof ETD>
+		(error: Error): Errory<any>
 
 		/**
 		 * is - func that asserts error is an Errory error
@@ -248,12 +222,43 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		Object.assign(instanceOptions, options)
 	}
 
+	const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolean): string => {
+		if (!print) {
+			return ''
+		}
+		if (relative) {
+			const relativeFileName = stack.fileName?.substring(
+				process.cwd().length + 1,
+				stack.fileName.length
+			)
+			return c.green(`  (${relativeFileName}:${stack.lineNumber}:${stack.columnNumber})`)
+		}
+		return c.green(`  (${stack.fileName}:${stack.lineNumber}:${stack.columnNumber})`)
+	}
+
+	const genTypeStr = (
+		print: boolean,
+		preceedingChars: string,
+		type: string | undefined
+	): string => {
+		if (!print || !type) {
+			return ''
+		}
+		return '  '+c.green(`${preceedingChars}${type}`)
+	}
+
+	const genMessageStr = (fMsg: string, args: any[]): string => {
+		return vsprintf(fMsg, args)
+	}
+
+	const genTypeTag = (preceedingChars: string, type: keyof ETD | undefined): string => {
+		return `${preceedingChars}${type}`
+	}
+
 	function errorFactory(message: string, args: any[]): Errory<undefined> {
-		let errorTypeInMessageStrFound = false
-		let errorTypeInMessageStr: keyof ETD
+		let errorTypeInMessageStr: keyof ETD | undefined = undefined
 		for (const errType in configuredErrorTypes) {
 			if (message.includes(genTypeTag(instanceOptions.typePreceedingChars, errType))) {
-				errorTypeInMessageStrFound = true
 				errorTypeInMessageStr = errType
 			}
 		}
@@ -285,12 +290,12 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		stackFrames.splice(0, 2)
 
 		setProp('name', err.name)
-		setProp('context', {})
-		setProp('type', errorTypeInMessageStrFound ? errorTypeInMessageStr! : undefined)
-		setProp('typeIsSet', false)
-		setProp('typeIsInMessageString', false)
-		setProp('stackFrames', stackFrames)
+		setProp('stack', err.stack)
 		setProp('message', message)
+		setProp('context', {})
+		setProp('type', errorTypeInMessageStr)
+		setProp('typeIsInMessageString', errorTypeInMessageStr ? true : false)
+		setProp('stackFrames', stackFrames)
 		setProp('args', args)
 		setProp('wrappedError', null)
 
@@ -300,18 +305,71 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 			setProp('wrappedError', getProp('args').splice(getProp('args').length - 1, 1)[0])
 		}
 
-		const genMessage = () =>
-			`${genMessageStr(message, args)}${genTypeStr(
-				!errorTypeInMessageStrFound && getProp('typeIsInMessageString'),
-				instanceOptions.typePreceedingChars,
+		const genWrappedErrorStr = (error: Error | null, indent: number) => {
+			if (!error) {
+				return ''
+			}
+			if ((error as any).__errory) {
+				let indentStr = ''
+				for (let i = 0; i < indent; i++) {
+					indentStr += '    '
+				}
+				return `\n${indentStr}${c.green(' \u2B91')}   ${error.toString()}`
+			}
+			return `: ${error.toString()}`
+		}
+
+		const genMessage = (
+			typeInMessage: boolean,
+			typePreceedingChars: string,
+			locationInMessage: boolean,
+			locationAsRelativePath: boolean,
+			wrappedErrorInMessage: boolean,
+			indent: number = 0
+		) => {
+			const msgStr = `${genMessageStr(message, args)}${genTypeStr(
+				!getProp('typeIsInMessageString') && typeInMessage,
+				typePreceedingChars,
 				getProp('type') as string
 			)}${genLocationErrorStr(
-				instanceOptions.locationInMessage,
+				locationInMessage,
 				getProp('stackFrames')[0],
-				instanceOptions.locationAsRelativePath
-			)}${genWrappedErrorStr(instanceOptions.wrappedErrorInMessage, getProp('wrappedError'))}`
+				locationAsRelativePath
+			)}${wrappedErrorInMessage ? genWrappedErrorStr(getProp('wrappedError'), indent) : ''}`
+			return msgStr
+		}
 
-		setProp('message', genMessage())
+		setProp(
+			'message',
+			genMessage(
+				instanceOptions.typeInMessage,
+				instanceOptions.typePreceedingChars,
+				instanceOptions.locationInMessage,
+				instanceOptions.locationAsRelativePath,
+				instanceOptions.wrappedErrorInMessage
+			)
+		)
+
+		setProp(
+			'toFormattedString',
+			(
+				typeInMessage: boolean,
+				typePreceedingChars: string,
+				locationInMessage: boolean,
+				locationAsRelativePath: boolean,
+				wrappedErrorInMessage: boolean,
+				indent: number,
+			) => {
+				return `${getProp('name')}: ${genMessage(
+					typeInMessage,
+					typePreceedingChars,
+					locationInMessage,
+					locationAsRelativePath,
+					wrappedErrorInMessage,
+					indent
+				)}`
+			}
+		)
 
 		// define is[ErrorType] function on Errory error
 		for (const errType in configuredErrorTypes) {
@@ -338,10 +396,10 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		// get error stack to remove error and errorFactory func stackframes
 		// and reassign to error stack
 		const rebuildStack = () => {
-			const errorStacks = err.stack!.split('\n')
+			const errorStacks = err.stack.split('\n')
 			let firstLine = errorStacks.slice(0, 1)
-			firstLine[0] = `Error: ${err.message}`
-			const remainingStacks = errorStacks.slice(3, errorStacks.length)
+			firstLine[0] = c.green('\u{1F6D1}')+` Error: ${getProp('message')}`
+			const remainingStacks = errorStacks.slice(3, errorStacks.length+1)
 			const newStack = ([] as string[]).concat(firstLine, remainingStacks)
 			setProp('stack', newStack.join('\n'))
 		}
@@ -354,20 +412,22 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 				if (!type && !context) {
 					return getProp('type')
 				}
-				if (getProp('typeIsSet')) {
-					throw new Error('cannot call "type" method once already set previously!')
+				if (getProp('type')) {
+					throw new Error('cannot call "type" method once already set!')
 				}
 				setProp('type', type)
-				Object.defineProperty(err, `__errory_type`, {
-					value: type,
-					configurable: false,
-					enumerable: false,
-					writable: false,
-				})
 				setProp('context', context as { [key: string]: string | number | boolean })
-				setProp('message', genMessage())
+				setProp(
+					'message',
+					genMessage(
+						instanceOptions.typeInMessage,
+						instanceOptions.typePreceedingChars,
+						instanceOptions.locationInMessage,
+						instanceOptions.locationAsRelativePath,
+						instanceOptions.wrappedErrorInMessage
+					)
+				)
 				rebuildStack()
-				setProp('typeIsSet', true)
 				return err
 			},
 			configurable: false,
@@ -426,7 +486,6 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 			configurable: false,
 			enumerable: false,
 		})
-
 		return (err as unknown) as Errory<undefined>
 	}
 
@@ -457,7 +516,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		value: <T extends keyof ETD>(error: Error, type?: T): error is Errory<T> => {
 			if ((error as any).__errory === true) {
 				if (type) {
-					if ((error as any).__errory_type === type) {
+					if ((error as any).__errory__type === type) {
 						return true
 					}
 					return false
@@ -473,3 +532,28 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 
 	return (errorConstructor as unknown) as ErroryConstructor
 }
+
+const error = buildError(
+	{
+		someTypeError: { context: {} },
+		TrainError: { context: { table: 'string' } },
+		AuthError: { context: { credentials: 'boolean' } },
+		NoType: { context: {}}
+	},
+	{
+		locationAsRelativePath: true,
+		locationInMessage: true,
+		wrappedErrorInMessage: true,
+		typeInMessage: true,
+		typePreceedingChars: '--',
+	}
+)
+
+const err = new Error('password does not match')
+
+const err2 = error('could not authenticate because auth failed', error('some went wrong', error('wow this is really messed up', err)))
+console.log(err2)
+// const err3 = error('could not set user to train', err2).type('TrainError')
+// console.log(err3)
+// console.log(err)
+// console.log(error('alter user account failed', err3).toString())
