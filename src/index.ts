@@ -1,4 +1,4 @@
-import { parse, StackFrame } from 'error-stack-parser'
+import ErrorStackParser, { StackFrame } from 'error-stack-parser'
 import { vsprintf } from 'sprintf-js'
 
 interface Opts {
@@ -73,17 +73,6 @@ interface Opts {
 
 export type Options = Partial<Opts>
 
-interface Internal<ETD extends ErrorTypesDefinition, T extends keyof ETD> {
-	ctx: Context<ETD[T]['context']>
-	type: keyof T
-	typeCalled: boolean
-	typeInMessageString: boolean
-	stackFrames: StackFrame[]
-	message: string
-	args: any[]
-	wrappedError: Error | null
-}
-
 type ContextValueType = 'string' | 'number' | 'boolean'
 
 interface ContextShape {
@@ -100,22 +89,58 @@ type Context<T extends ContextShape> = {
 		: never
 }
 
-interface ErrorTypeConfig {
-	context: ContextShape
-}
-
 interface ErrorTypesDefinition {
 	[key: string]: ErrorTypeConfig
 }
 
-type error<ETD extends ErrorTypesDefinition, T extends keyof ETD> = Error & {
-	readonly ctx: Context<ETD[T]['context']>
+interface ErrorTypeConfig {
+	context: ContextShape
+}
+
+interface ErroryInternal<ETD extends ErrorTypesDefinition, T extends keyof ETD> extends Error {
+	context: { [key: string]: string | number | boolean }
+	type: keyof ETD | undefined
+	typeIsSet: boolean
+	typeIsInMessageString: boolean
+	stackFrames: StackFrame[]
+	message: string
+	args: any[]
+	wrappedError: Error | null
+}
+
+type Errory<
+	T extends keyof ETD,
+	Typed extends true | false,
+	ETD extends ErrorTypesDefinition
+> = Error & {
+	readonly context: Context<ETD[T]['context']>
 } & {
-		[key in keyof ETD as `is${string & key}`]: (err?: error<ETD, any>) => err is error<ETD, key>
-	} & {
-		type<E extends keyof ETD>(type: E, ctx?: Context<ETD[E]['context']>): error<ETD, E>
-		toJSON: (prettyPrint?: boolean) => string
-	}
+		[key in keyof ETD as `is${Capitalize<string & key>}`]: (
+			err?: Errory<any, any, any>
+		) => err is Errory<key, true, ETD>
+	} &
+	ErroryFuncs<ETD, T, Typed>
+
+interface ErroryFuncs<
+	ETD extends ErrorTypesDefinition,
+	T extends keyof ETD,
+	Typed extends true | false
+> {
+	/**
+	 * type - func that sets the error type and optionally allows you to set context properties
+	 *
+	 * @param type - string that is a type from predefined error types
+	 * @param ctx - an object which should be the shape of predefined error type context
+	 */
+	type<E extends keyof ETD>(type: E, context?: Context<ETD[E]['context']>): Errory<E, true, ETD>
+	type(): Typed extends true ? T : Typed extends false ? keyof ETD : never
+	/**
+	 * toJSON - func that converts error into JSON serialized string
+	 *
+	 * @param pretty - whether to format JSON in pretty format (defaults to false)
+	 */
+	toJSON(pretty?: boolean): string
+}
 
 const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolean): string => {
 	if (!print) {
@@ -131,7 +156,7 @@ const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolea
 	return `  (${stack.fileName}:${stack.lineNumber}:${stack.columnNumber})`
 }
 
-const genTypeStr = (print: boolean, preceedingChars: string, type: string): string => {
+const genTypeStr = (print: boolean, preceedingChars: string, type: string | undefined): string => {
 	if (!print || !type) {
 		return ''
 	}
@@ -165,15 +190,37 @@ const setupErrorTypes = <ETD extends ErrorTypesDefinition>(errorTypes: ETD): ETD
 	return _errorTypes
 }
 
-const setErrorContext = (err: error<any, any>, ctx: any) => {
-	;(err as any).ctx = ctx
-}
-
 export const buildError = <ETD extends ErrorTypesDefinition>(
 	errorTypes: ETD,
 	opts: Options = {}
 ) => {
-	type ErrorTypes = ETD
+	type ErroryConstructor = {
+		/**
+		 * Errory constructor - constructs a new Errory error from a message
+		 *
+		 * @param message - A string that will be the error's message.
+		 * @param args - Any number of arguments used for formatting message string.
+		 * 				 Optionally provide an Error object as the final argument to
+		 * 				 wrap in Errory error returned.
+		 */
+		(message: string, ...args: [...any, Error]): Errory<keyof ETD, false, ETD>
+		/**
+		 * Errory constructor - constructs a new Errory error from an existing plain Error
+		 *
+		 * @param error - A plain Error object to convert into an Errory error.
+		 */
+		(error: Error): Errory<keyof ETD, false, ETD>
+
+		/**
+		 * is - func that asserts error is an Errory error
+		 * @param err - plain Error object
+		 */
+		is<T extends keyof ETD>(
+			error: Error,
+			type?: T
+		): error is T extends keyof ETD ? Errory<T, true, ETD> : Errory<keyof ETD, false, ETD>
+	}
+
 	let configuredErrorTypes = setupErrorTypes(errorTypes)
 
 	const instanceOptions: Opts = {
@@ -188,9 +235,9 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		Object.assign(instanceOptions, options)
 	}
 
-	function errorFactory(message: string, args: any[]): error<ErrorTypes, any> {
+	function errorFactory(message: string, args: any[]): Errory<keyof ETD, false, ETD> {
 		let errorTypeInMessageStrFound = false
-		let errorTypeInMessageStr: keyof ErrorTypes
+		let errorTypeInMessageStr: keyof ETD
 		for (const errType in configuredErrorTypes) {
 			if (message.includes(genTypeTag(instanceOptions.typePreceedingChars, errType))) {
 				errorTypeInMessageStrFound = true
@@ -199,47 +246,67 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		}
 
 		// create the error to use
-		let err = Error() as error<ErrorTypes, any>
-		const stackFrames = parse(err)
+		let err = Error() as Readonly<ErroryInternal<ETD, keyof ETD>>
+
+		const setProp = <EI extends ErroryInternal<ETD, keyof ETD>, P extends keyof EI>(
+			prop: P,
+			value: EI[P]
+		): void => {
+			Object.defineProperty(err, `__errory__${prop}`, {
+				value: value,
+				configurable: true,
+				writable: false,
+				enumerable: false,
+			})
+		}
+
+		const getProp = <T extends keyof ErroryInternal<ETD, keyof ETD>>(
+			prop: T
+		): ErroryInternal<ETD, keyof ETD>[T] => {
+			return (err as any)[`__errory__${prop}`]
+		}
+
+		const stackFrames = ErrorStackParser.parse(err)
 
 		// remove first 2 StackFrames as they are error and errorFactory function calls
 		stackFrames.splice(0, 2)
 
-		const internal: Internal<ErrorTypes, any> = {
-			ctx: {},
-			type: errorTypeInMessageStrFound ? errorTypeInMessageStr! : '',
-			typeCalled: false,
-			typeInMessageString: false,
-			stackFrames: stackFrames,
-			message: message,
-			args: args,
-			wrappedError: null,
-		}
+		setProp('name', err.name)
+		setProp('context', {})
+		setProp('type', errorTypeInMessageStrFound ? errorTypeInMessageStr! : undefined)
+		setProp('typeIsSet', false)
+		setProp('typeIsInMessageString', false)
+		setProp('stackFrames', stackFrames)
+		setProp('message', message)
+		setProp('args', args)
+		setProp('wrappedError', null)
 
 		// check to see if the last argument passed is of type Error, if so, remove from args and
 		// assign to internal.wrappedError
-		if (args.length && args[args.length - 1] instanceof Error) {
-			internal.wrappedError = args.splice(args.length - 1, 1)[0]
+		if (getProp('args').length && getProp('args')[getProp('args').length - 1] instanceof Error) {
+			setProp('wrappedError', getProp('args').splice(getProp('args').length - 1, 1)[0])
 		}
 
 		const genMessage = () =>
 			`${genMessageStr(message, args)}${genTypeStr(
-				instanceOptions.typeInMessage,
+				!errorTypeInMessageStrFound && getProp('typeIsInMessageString'),
 				instanceOptions.typePreceedingChars,
-				internal.type as string
+				getProp('type') as string
 			)}${genLocationErrorStr(
 				instanceOptions.locationInMessage,
-				internal.stackFrames[0],
+				getProp('stackFrames')[0],
 				instanceOptions.locationAsRelativePath
-			)}${genWrappedErrorStr(instanceOptions.wrappedErrorInMessage, internal.wrappedError)}`
+			)}${genWrappedErrorStr(instanceOptions.wrappedErrorInMessage, getProp('wrappedError'))}`
 
-		err.message = genMessage()
+		setProp('message', genMessage())
 
-		// define is[ErrorType] function on error
+		// define is[ErrorType] function on Errory error
 		for (const errType in configuredErrorTypes) {
-			Object.defineProperty(err, `is${errType}`, {
+			const errTypeCapitalized =
+				errType[0].toUpperCase() + errType.split('').splice(1, errType.length).join('')
+			Object.defineProperty(err, `is${errTypeCapitalized}`, {
 				value: () => {
-					return internal.type === errType
+					return getProp('type') === errType
 				},
 				configurable: false,
 				enumerable: false,
@@ -257,58 +324,142 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 
 		// get error stack to remove error and errorFactory func stackframes
 		// and reassign to error stack
-		const alterStack = () => {
+		const rebuildStack = () => {
 			const errorStacks = err.stack!.split('\n')
 			let firstLine = errorStacks.slice(0, 1)
 			firstLine[0] = `Error: ${err.message}`
 			const remainingStacks = errorStacks.slice(3, errorStacks.length)
 			const newStack = ([] as string[]).concat(firstLine, remainingStacks)
-			err.stack = newStack.join('\n')
+			setProp('stack', newStack.join('\n'))
 		}
 
-		alterStack()
+		rebuildStack()
 
-		err.type = <T extends keyof ErrorTypes>(type: T, ctx?: Context<ErrorTypes[T]['context']>) => {
-			if (internal.typeCalled) {
-				throw new Error('cannot call "type" method once already set previously!')
-			}
-			internal.type = type
-			internal.ctx = ctx as Context<ErrorTypes[T]['context']>
-			setErrorContext(err, Object.freeze({ ...internal.ctx }))
-			err.message = genMessage()
-			alterStack()
-			internal.typeCalled = true
-			return err as error<ErrorTypes, T>
-		}
+		// define Errory type method
+		Object.defineProperty(err, 'type', {
+			value: <T extends keyof ETD>(type?: T, context?: Context<ETD[T]['context']>) => {
+				if (!type && !context) {
+					return getProp('type')
+				}
+				if (getProp('typeIsSet')) {
+					throw new Error('cannot call "type" method once already set previously!')
+				}
+				setProp('type', type)
+				Object.defineProperty(err, `__errory_type`, {
+					value: type,
+					configurable: false,
+					enumerable: false,
+					writable: false,
+				})
+				setProp('context', context as { [key: string]: string | number | boolean })
+				setProp('message', genMessage())
+				rebuildStack()
+				setProp('typeIsSet', true)
+				return err
+			},
+			configurable: false,
+			enumerable: false,
+			writable: false,
+		})
 
-		err.toJSON = (prettyPrint: boolean = false): string => {
-			return JSON.stringify(
-				{
-					name: err.name,
-					type: internal.type,
-					message: err.message,
-					context: err.ctx,
-					stack: internal.stackFrames,
-				},
-				null,
-				prettyPrint ? 2 : 0
-			)
-		}
+		// define Errory toJSON method
+		Object.defineProperty(err, 'toJSON', {
+			value: (pretty: boolean = false): string => {
+				return JSON.stringify(
+					{
+						name: getProp('name'),
+						type: getProp('type'),
+						message: getProp('message'),
+						context: getProp('context'),
+						stack: getProp('stackFrames'),
+					},
+					null,
+					pretty ? 2 : 0
+				)
+			},
+			configurable: false,
+			enumerable: false,
+			writable: false,
+		})
 
-		setErrorContext(err, Object.freeze({ ...internal.ctx }))
-		return err
+		// get name from errory name prop value
+		Object.defineProperty(err, 'name', {
+			get: () => getProp('name'),
+			set: () => {},
+			configurable: false,
+			enumerable: false,
+		})
+
+		// get message from errory message prop value
+		Object.defineProperty(err, 'message', {
+			get: () => getProp('message'),
+			set: () => {},
+			configurable: false,
+			enumerable: true,
+		})
+
+		// get stack from errory stack prop value
+		Object.defineProperty(err, 'stack', {
+			get: () => getProp('stack'),
+			set: () => {},
+			configurable: false,
+			enumerable: true,
+		})
+
+		// get context from errory context prop value
+		Object.defineProperty(err, 'context', {
+			get: () => getProp('context'),
+			set: () => {},
+			configurable: false,
+			enumerable: false,
+		})
+
+		return (err as unknown) as Errory<keyof ETD, false, ETD>
 	}
 
 	setInstanceOptions(opts)
-
-	function error(message: string, ...args: [...any, Error]): error<ErrorTypes, any>
-	function error(error: Error): error<ErrorTypes, any>
-	function error(messageOrError: string | Error, ...args: any[]) {
+	// /**
+	//  * Errory constructor - constructs a new Errory error from a message
+	//  *
+	//  * @param message - A string that will be the error's message.
+	//  * @param args - Any number of arguments used for formatting message string.
+	//  * 				 Optionally provide an Error object as the final argument to
+	//  * 				 wrap in Errory returned.
+	//  */
+	// function errorConstructor(message: string, ...args: [...any, Error]): Errory<ErrorTypes, any>
+	// /**
+	//  * Errory constructor - constructs a new Errory error from an existing plain Error
+	//  *
+	//  * @param error - A plain Error object to convert into an Errory error.
+	//  */
+	// function errorConstructor(error: Error): Errory<ErrorTypes, any>
+	function errorConstructor(
+		messageOrError: string | Error,
+		...args: any[]
+	): Errory<keyof ETD, false, ETD> {
 		if (messageOrError instanceof Error) {
 			return errorFactory(messageOrError.message, [])
 		}
 		return errorFactory(messageOrError as string, args)
 	}
 
-	return error
+	Object.defineProperty(errorConstructor, 'is', {
+		value: <T extends keyof ETD>(error: Error, type?: T): error is Errory<T, true, ETD> => {
+			if ((error as any).__errory === true) {
+				if (type) {
+					if ((error as any).__errory_type === type) {
+						return true
+					}
+					return false
+				}
+				return true
+			}
+			return false
+		},
+		configurable: false,
+		writable: false,
+		enumerable: true,
+	})
+
+	return errorConstructor as ErroryConstructor
 }
