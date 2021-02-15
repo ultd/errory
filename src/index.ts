@@ -97,49 +97,16 @@ interface ErrorTypeConfig {
 	context: ContextShape
 }
 
-interface ErroryInternal<ETD extends ErrorTypesDefinition, T extends keyof ETD> extends Error {
+interface ErroryInternal<ETD extends ErrorTypesDefinition, T extends keyof ETD | undefined>
+	extends Error {
 	context: { [key: string]: string | number | boolean }
-	type: keyof ETD | undefined
+	type: T
 	typeIsSet: boolean
 	typeIsInMessageString: boolean
 	stackFrames: StackFrame[]
 	message: string
 	args: any[]
 	wrappedError: Error | null
-}
-
-type Errory<
-	T extends keyof ETD,
-	Typed extends true | false,
-	ETD extends ErrorTypesDefinition
-> = Error & {
-	readonly context: Context<ETD[T]['context']>
-} & {
-		[key in keyof ETD as `is${Capitalize<string & key>}`]: (
-			err?: Errory<any, any, any>
-		) => err is Errory<key, true, ETD>
-	} &
-	ErroryFuncs<ETD, T, Typed>
-
-interface ErroryFuncs<
-	ETD extends ErrorTypesDefinition,
-	T extends keyof ETD,
-	Typed extends true | false
-> {
-	/**
-	 * type - func that sets the error type and optionally allows you to set context properties
-	 *
-	 * @param type - string that is a type from predefined error types
-	 * @param ctx - an object which should be the shape of predefined error type context
-	 */
-	type<E extends keyof ETD>(type: E, context?: Context<ETD[E]['context']>): Errory<E, true, ETD>
-	type(): Typed extends true ? T : Typed extends false ? keyof ETD : never
-	/**
-	 * toJSON - func that converts error into JSON serialized string
-	 *
-	 * @param pretty - whether to format JSON in pretty format (defaults to false)
-	 */
-	toJSON(pretty?: boolean): string
 }
 
 const genLocationErrorStr = (print: boolean, stack: StackFrame, relative: boolean): string => {
@@ -194,6 +161,52 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 	errorTypes: ETD,
 	opts: Options = {}
 ) => {
+	type Errory<T extends keyof ETD | undefined> = Error & {
+		readonly context: T extends keyof ETD
+			? {
+					[key in keyof ETD[T]['context']]?: ETD[T]['context'][key] extends 'string'
+						? string
+						: ETD[T]['context'][key] extends 'number'
+						? number
+						: ETD[T]['context'][key] extends 'boolean'
+						? boolean
+						: never
+			  }
+			: any
+	} & {
+			[key in keyof ETD as `is${Capitalize<string & key>}`]: (
+				err?: Errory<keyof ETD>
+			) => err is Errory<key>
+		} & {
+			/**
+			 * type - func that sets the error type and optionally allows you to set context properties
+			 *
+			 * @param type - string that is a type from predefined error types
+			 * @param ctx - an object which should be the shape of predefined error type context
+			 */
+			type<E extends keyof ETD | undefined>(
+				type: E,
+				context?: E extends keyof ETD
+					? {
+							[key in keyof ETD[E]['context']]: ETD[E]['context'][key] extends 'string'
+								? string
+								: ETD[E]['context'][key] extends 'number'
+								? number
+								: ETD[E]['context'][key] extends 'boolean'
+								? boolean
+								: never
+					  }
+					: never
+			): Errory<E>
+			type(): T extends keyof ETD ? T : undefined
+			/**
+			 * toJSON - func that converts error into JSON serialized string
+			 *
+			 * @param pretty - whether to format JSON in pretty format (defaults to false)
+			 */
+			toJSON(pretty?: boolean): string
+		}
+
 	type ErroryConstructor = {
 		/**
 		 * Errory constructor - constructs a new Errory error from a message
@@ -203,13 +216,13 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		 * 				 Optionally provide an Error object as the final argument to
 		 * 				 wrap in Errory error returned.
 		 */
-		(message: string, ...args: [...any, Error]): Errory<keyof ETD, false, ETD>
+		(message: string, ...args: [...any, Error]): Errory<keyof ETD>
 		/**
 		 * Errory constructor - constructs a new Errory error from an existing plain Error
 		 *
 		 * @param error - A plain Error object to convert into an Errory error.
 		 */
-		(error: Error): Errory<keyof ETD, false, ETD>
+		(error: Error): Errory<keyof ETD>
 
 		/**
 		 * is - func that asserts error is an Errory error
@@ -218,7 +231,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		is<T extends keyof ETD>(
 			error: Error,
 			type?: T
-		): error is T extends keyof ETD ? Errory<T, true, ETD> : Errory<keyof ETD, false, ETD>
+		): error is T extends keyof ETD ? Errory<T> : Errory<keyof ETD>
 	}
 
 	let configuredErrorTypes = setupErrorTypes(errorTypes)
@@ -235,7 +248,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		Object.assign(instanceOptions, options)
 	}
 
-	function errorFactory(message: string, args: any[]): Errory<keyof ETD, false, ETD> {
+	function errorFactory(message: string, args: any[]): Errory<undefined> {
 		let errorTypeInMessageStrFound = false
 		let errorTypeInMessageStr: keyof ETD
 		for (const errType in configuredErrorTypes) {
@@ -246,9 +259,9 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		}
 
 		// create the error to use
-		let err = Error() as Readonly<ErroryInternal<ETD, keyof ETD>>
+		let err = Error() as Readonly<ErroryInternal<ETD, undefined>>
 
-		const setProp = <EI extends ErroryInternal<ETD, keyof ETD>, P extends keyof EI>(
+		const setProp = <EI extends ErroryInternal<ETD, any>, P extends keyof EI>(
 			prop: P,
 			value: EI[P]
 		): void => {
@@ -414,7 +427,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 			enumerable: false,
 		})
 
-		return (err as unknown) as Errory<keyof ETD, false, ETD>
+		return (err as unknown) as Errory<undefined>
 	}
 
 	setInstanceOptions(opts)
@@ -433,10 +446,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 	//  * @param error - A plain Error object to convert into an Errory error.
 	//  */
 	// function errorConstructor(error: Error): Errory<ErrorTypes, any>
-	function errorConstructor(
-		messageOrError: string | Error,
-		...args: any[]
-	): Errory<keyof ETD, false, ETD> {
+	function errorConstructor(messageOrError: string | Error, ...args: any[]): Errory<undefined> {
 		if (messageOrError instanceof Error) {
 			return errorFactory(messageOrError.message, [])
 		}
@@ -444,7 +454,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 	}
 
 	Object.defineProperty(errorConstructor, 'is', {
-		value: <T extends keyof ETD>(error: Error, type?: T): error is Errory<T, true, ETD> => {
+		value: <T extends keyof ETD>(error: Error, type?: T): error is Errory<T> => {
 			if ((error as any).__errory === true) {
 				if (type) {
 					if ((error as any).__errory_type === type) {
@@ -461,5 +471,5 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		enumerable: true,
 	})
 
-	return errorConstructor as ErroryConstructor
+	return (errorConstructor as unknown) as ErroryConstructor
 }
