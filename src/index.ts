@@ -162,7 +162,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 				type: E,
 				context?: E extends keyof ETD
 					? {
-							[key in keyof ETD[E]['context']]: ETD[E]['context'][key] extends 'string'
+							[key in keyof ETD[E]['context']]?: ETD[E]['context'][key] extends 'string'
 								? string
 								: ETD[E]['context'][key] extends 'number'
 								? number
@@ -179,6 +179,10 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 			 * @param pretty - whether to format JSON in pretty format (defaults to false)
 			 */
 			toJSON(pretty?: boolean): string
+			/**
+			 * wrappedError - func that returns this error's wrapped error (if any)
+			 */
+			wrappedError(): Error | null
 		}
 
 	type ErroryConstructor = {
@@ -244,7 +248,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		if (!print || !type) {
 			return ''
 		}
-		return '  '+c.green(`${preceedingChars}${type}`)
+		return '  ' + c.green(`${preceedingChars}${type}`)
 	}
 
 	const genMessageStr = (fMsg: string, args: any[]): string => {
@@ -358,7 +362,7 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 				locationInMessage: boolean,
 				locationAsRelativePath: boolean,
 				wrappedErrorInMessage: boolean,
-				indent: number,
+				indent: number
 			) => {
 				return `${getProp('name')}: ${genMessage(
 					typeInMessage,
@@ -398,8 +402,8 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 		const rebuildStack = () => {
 			const errorStacks = err.stack.split('\n')
 			let firstLine = errorStacks.slice(0, 1)
-			firstLine[0] = c.green('\u{1F6D1}')+` Error: ${getProp('message')}`
-			const remainingStacks = errorStacks.slice(3, errorStacks.length+1)
+			firstLine[0] = c.green('\u{1F6D1}') + ` Error: ${getProp('message')}`
+			const remainingStacks = errorStacks.slice(3, errorStacks.length + 1)
 			const newStack = ([] as string[]).concat(firstLine, remainingStacks)
 			setProp('stack', newStack.join('\n'))
 		}
@@ -486,6 +490,15 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 			configurable: false,
 			enumerable: false,
 		})
+
+		// get wrappedError from errory wrappedError prop value
+		Object.defineProperty(err, 'wrappedError', {
+			value: () => getProp('wrappedError'),
+			configurable: false,
+			enumerable: false,
+			writable: false,
+		})
+
 		return (err as unknown) as Errory<undefined>
 	}
 
@@ -517,3 +530,15 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 
 	return (errorConstructor as unknown) as ErroryConstructor
 }
+
+const error = buildError({
+	DBError: { context: { table: 'string', column: 'string' } },
+	AuthError: { context: { cookieExpired: 'boolean', credentialsIncorrect: 'boolean' } },
+	SomeOtherError: { context: {} },
+}, {
+	locationInMessage: true,
+	locationAsRelativePath: true,
+	typeInMessage: true
+})
+
+type error = ReturnType<typeof error>
