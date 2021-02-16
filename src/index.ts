@@ -490,21 +490,6 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 	}
 
 	setInstanceOptions(opts)
-	// /**
-	//  * Errory constructor - constructs a new Errory error from a message
-	//  *
-	//  * @param message - A string that will be the error's message.
-	//  * @param args - Any number of arguments used for formatting message string.
-	//  * 				 Optionally provide an Error object as the final argument to
-	//  * 				 wrap in Errory returned.
-	//  */
-	// function errorConstructor(message: string, ...args: [...any, Error]): Errory<ErrorTypes, any>
-	// /**
-	//  * Errory constructor - constructs a new Errory error from an existing plain Error
-	//  *
-	//  * @param error - A plain Error object to convert into an Errory error.
-	//  */
-	// function errorConstructor(error: Error): Errory<ErrorTypes, any>
 	function errorConstructor(messageOrError: string | Error, ...args: any[]): Errory<undefined> {
 		if (messageOrError instanceof Error) {
 			return errorFactory(messageOrError.message, [])
@@ -532,28 +517,3 @@ export const buildError = <ETD extends ErrorTypesDefinition>(
 
 	return (errorConstructor as unknown) as ErroryConstructor
 }
-
-const error = buildError(
-	{
-		someTypeError: { context: {} },
-		TrainError: { context: { table: 'string' } },
-		AuthError: { context: { credentials: 'boolean' } },
-		NoType: { context: {}}
-	},
-	{
-		locationAsRelativePath: true,
-		locationInMessage: true,
-		wrappedErrorInMessage: true,
-		typeInMessage: true,
-		typePreceedingChars: '--',
-	}
-)
-
-const err = new Error('password does not match')
-
-const err2 = error('could not authenticate because auth failed', error('some went wrong', error('wow this is really messed up', err)))
-console.log(err2)
-// const err3 = error('could not set user to train', err2).type('TrainError')
-// console.log(err3)
-// console.log(err)
-// console.log(error('alter user account failed', err3).toString())

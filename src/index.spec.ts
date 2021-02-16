@@ -2,7 +2,7 @@ import { buildError } from './index'
 
 describe('Errory buildError() function', () => {    
         
-    it('should create an plain Errory error constructor', () => {
+    it('should create a plain Errory constructor', () => {
         const error = buildError({})
         expect(error).toBeDefined()
     })
@@ -12,6 +12,15 @@ describe('Errory buildError() function', () => {
         expect(error.is(error('some error message'))).toBe(true)
     })
 
-    it('should construct error with methods')
+    it('should have method "is()" which check if an Error is an Errory error and a specific type', () => {
+        const error = buildError({
+            AuthError: { context: { credentialsMismatch: 'boolean'}},
+            DBError: { context: { table: 'string', column: 'string' }},
+            SocketError: { context: { brokenPipe: 'boolean' }}
+        })
+
+        expect(error.is(error('some error').type('DBError'), 'DBError')).toEqual(true)
+        expect(error.is(error('some error').type('DBError'), 'AuthError')).toEqual(false)
+    })
 
 })
